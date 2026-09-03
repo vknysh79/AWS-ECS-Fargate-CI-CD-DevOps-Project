@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'qa', 'stage', 'production', 'bootstrap'],
+            description: 'Target infrastructure environment (select bootstrap to provision S3 state bucket & DynamoDB lock table)'
+        )
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply', 'destroy'],
+            description: 'Terraform action to execute'
+        )
+        booleanParam(
+            name: 'AUTO_APPROVE',
+            defaultValue: false,
+            description: 'Auto approve terraform apply (Destroy ALWAYS requires manual approval)'
+        )
+    }
+
+    environment {
+        AWS_REGION = "us-east-1"
+        TF_DIR     = "${params.ENVIRONMENT == 'bootstrap' ? 'terraform/bootstrap' : 'terraform/environments/' + params.ENVIRONMENT}"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+                echo "Executing Infrastructure Flow for Target: ${params.ENVIRONMENT.toUpperCase()} (Action: ${params.ACTION})"
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir("${TF_DIR}") {
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir("${TF_DIR}") {
+                    sh 'terraform plan -out=tfplan'
+                }
+            }
+        }
+
+        stage('Terraform Execution') {
+            when {
+                expression { params.ACTION == 'apply' || params.ACTION == 'destroy' }
+            }
+            steps {
+                script {
+                    if (params.ACTION == 'apply') {
+                        if (!params.AUTO_APPROVE) {
+                            input message: "Approve applying Terraform changes to ${params.ENVIRONMENT.toUpperCase()} environment?", ok: "Apply"
+                        }
+                    } else if (params.ACTION == 'destroy') {
+                        // Destroy ALWAYS requires mandatory manual interactive approval
+                        input message: "🛑 CRITICAL WARNING: Confirm DESTROYING ${params.ENVIRONMENT.toUpperCase()} infrastructure?", ok: "Confirm Destroy"
+                    }
+
+                    dir("${TF_DIR}") {
+                        if (params.ACTION == 'apply') {
+                            sh 'terraform apply -auto-approve tfplan'
+                        } else if (params.ACTION == 'destroy') {
+                            sh 'terraform destroy -auto-approve'
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            dir("${TF_DIR}") {
+                sh 'rm -f tfplan'
+            }
+        }
+        success {
+            echo "Infrastructure ${params.ACTION} pipeline finished successfully for target ${params.ENVIRONMENT.toUpperCase()}."
+        }
+        failure {
+            echo "Infrastructure ${params.ACTION} pipeline failed for target ${params.ENVIRONMENT.toUpperCase()}."
+        }
+    }
+}
