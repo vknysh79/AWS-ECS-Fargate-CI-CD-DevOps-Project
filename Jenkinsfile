@@ -17,6 +17,11 @@ pipeline {
             defaultValue: true,
             description: 'Force a new ECS Fargate deployment'
         )
+        booleanParam(
+            name: 'ENABLE_SECURITY_SCAN',
+            defaultValue: true,
+            description: 'Enable Snyk & Trivy vulnerability scanners (Blocks deployment if HIGH/CRITICAL vulnerabilities found)'
+        )
     }
 
     environment {
@@ -50,6 +55,43 @@ pipeline {
                     dir('app') {
                         appImage = docker.build("${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}")
                     }
+                }
+            }
+        }
+
+        stage('Security Scanning (Snyk & Trivy)') {
+            when {
+                expression { params.ENABLE_SECURITY_SCAN == true }
+            }
+            steps {
+                script {
+                    echo "🔒 STAGE 1/3: Executing Snyk Dependency Vulnerability Scan..."
+                    try {
+                        dir('app') {
+                            sh 'snyk test --severity-threshold=high'
+                        }
+                        echo "✅ Snyk Dependency Scan PASSED."
+                    } catch (Exception snykDepEx) {
+                        error "DEPLOYMENT BLOCKED: Snyk detected HIGH/CRITICAL vulnerabilities in application dependencies!"
+                    }
+
+                    echo "STAGE 2/3: Executing Snyk Container Image Security Scan..."
+                    try {
+                        sh "snyk container test ${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --severity-threshold=high"
+                        echo "Snyk Container Image Scan PASSED."
+                    } catch (Exception snykImgEx) {
+                        error "DEPLOYMENT BLOCKED: Snyk detected HIGH/CRITICAL vulnerabilities in container image!"
+                    }
+
+                    echo "STAGE 3/3: Executing Aqua Security Trivy Container Scan..."
+                    try {
+                        sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "✅Trivy Container Scan PASSED."
+                    } catch (Exception trivyEx) {
+                        error "DEPLOYMENT BLOCKED: Trivy detected HIGH/CRITICAL vulnerabilities in container image!"
+                    }
+
+                    echo "✅ALL SECURITY SCANS PASSED SUCCESSFULLY! Proceeding to ECR push and deployment."
                 }
             }
         }
@@ -96,7 +138,7 @@ pipeline {
                         sh "aws ecs wait services-stable --cluster ${ECS_CLUSTER} --services ${ECS_SERVICE} --region ${AWS_REGION}"
                         echo "✅ Deployment completed successfully! Container startup & health probes passed. Service ${ECS_SERVICE} is stable."
                     } catch (Exception e) {
-                        echo "❌ DEPLOYMENT FAILED DURING CONTAINER STARTUP OR HEALTH PROBES: ${e.getMessage()}"
+                        echo "❌DEPLOYMENT FAILED DURING CONTAINER STARTUP OR HEALTH PROBES: ${e.getMessage()}"
 
                         // Extract diagnostic details from recent stopped tasks (startup/liveness probe failures)
                         try {

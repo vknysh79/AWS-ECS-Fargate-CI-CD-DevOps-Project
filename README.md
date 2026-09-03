@@ -46,6 +46,10 @@ aws-ecs-fargate-cicd/
      - **Container Health Probes**: Configured with explicit `healthCheck` liveness probes (`curl -f http://localhost:5000/`) and ALB Target Group health checks.
      - **Startup & Probe Failure Diagnostics**: If container startup fails or health probes fail, the pipeline captures task stopped reasons and container exit codes (`aws ecs describe-tasks`).
      - **Automatic Revision Rollback**: Instantly restores the ECS service to the exact previous immutable Task Definition revision ARN and waits for health stabilization.
+   - **Automated Security Scanning & Deployment Blockers (Snyk & Trivy)**:
+     - **Snyk Dependency & Container Scan**: Scans `requirements.txt` dependencies and the built container image for vulnerabilities (`snyk test --severity-threshold=high`).
+     - **Aqua Security Trivy Scan**: Scans the Docker image for OS and package vulnerabilities (`trivy image --exit-code 1 --severity HIGH,CRITICAL`).
+     - **Deployment Gate**: If ANY `HIGH` or `CRITICAL` vulnerability is detected by Snyk or Trivy, the pipeline immediately halts, **blocking image push to ECR and blocking ECS deployment**.
 
 2. **S3 Remote State Storage, DynamoDB Locking & Strict IAM Security**:
    - **Remote Backend**: All Terraform environments use AWS S3 bucket `devops-terraform-state-bucket-prod`.
